@@ -52,16 +52,10 @@ def formulario():
     if request.method == 'POST':
         redis = get_redis()
         idUser = request.form['idUser']
-        ### algoritmo
-        rec = recommender(data={}, k=1, metric='pearson', n=5)  # Puedes inicializar con 
-        username = idUser
-        rec.loadBookDB(path='')
-        recommendations = rec.recommend(username)
-        print(recommendations)
-        data = json.dumps({'idUser': idUser, 'recomendaciones': recommendations})
-        redis.rpush('reco', data)
+        data = json.dumps({'idUser': idUser})
+        redis.rpush('idUser', data)
         print("===================================0000 xxxssssss")
-        """ valores_bytes = redis.lrange('votes', 0, -1)
+        valores_bytes = redis.lrange('idUser', 0, -1)
 
         # Decodificar los valores de bytes a cadenas y luego cargarlos como diccionarios JSON
         valores = [json.loads(valor.decode()) for valor in valores_bytes]
@@ -71,10 +65,8 @@ def formulario():
             print(valor)
 
         # Cerrar la conexión con Redis
-        redis.close() """
-       
+        redis.close() 
         #redis.rpush('votes', recommendations)
-
     resp = make_response(render_template(
         'formulario.html'
     ))

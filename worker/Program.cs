@@ -7,7 +7,7 @@ using System.Threading;
 using Newtonsoft.Json;
 using Npgsql;
 using StackExchange.Redis;
-
+using Confluent.Kafka;
 namespace Worker
 {
     public class Program
@@ -26,6 +26,16 @@ namespace Worker
                 keepAliveCommand.CommandText = "SELECT 1";
 
                 var definition = new { vote = "", voter_id = "" };
+                var idUserDefinition = new { idUser = ""};
+
+
+                var config = new ProducerConfig
+                {
+                    BootstrapServers = "broker:9092", // Dirección del servidor Kafka
+                    // Otras configuraciones como seguridad, serializadores, etc., si es necesario
+                };
+                var kafkaProducer = new ProducerBuilder<string, string>(config).Build();
+
                 while (true)
                 {
                     // Slow down to prevent CPU spike, only query each 100ms
@@ -38,7 +48,9 @@ namespace Worker
                         redis = redisConn.GetDatabase();
                     }
                     string json = redis.ListLeftPopAsync("votes").Result;
-                    string jsonReco = redis.ListLeftPopAsync("reco").Result;
+                    
+                    //string jsonReco = redis.ListLeftPopAsync("reco").Result;
+                    string jsonUser= redis.ListLeftPopAsync("idUser").Result;
                     if (json != null)
                     {
                         // deserealizacion convierte un JSON  un OBJETO
@@ -55,19 +67,20 @@ namespace Worker
                             UpdateVote(pgsql, vote.voter_id, vote.vote);
                         }
                     }
-                    if(jsonReco !=null)
+                    if(jsonUser !=null)
                     {
-                        dynamic datos = JsonConvert.DeserializeObject(jsonReco);
-                        string idUsuario = datos.idUser;
-                        // Acceder a la lista de recomendaciones
-                        var recomendaciones = datos.recomendaciones;
-                        // Iterar sobre cada recomendación en la lista
-                        foreach (var recomendacion in recomendaciones)
+           
+                        var idU = JsonConvert.DeserializeAnonymousType(jsonUser, idUserDefinition);
+                        Console.WriteLine($"EL VALOR DE ID-USER ->> '{idU.idUser}'");
+                        // Reconnect DB if down
+                        if (!pgsql.State.Equals(System.Data.ConnectionState.Open))
                         {
-                            string nombre = recomendacion[0];
-                            double rating = Convert.ToDouble(recomendacion[1]);
-                            Console.WriteLine($"Título: {nombre}, Puntuación: {rating}");
-                            UpdateRecomendacion(pgsql , idUsuario , nombre ,  rating.ToString() );
+                            Console.WriteLine("Reconnecting DB");
+                            pgsql = OpenDbConnection("Server=db;Username=postgres;Password=postgres;");
+                        }
+                        else
+                        { // Normal +1 vote requested
+                            InsertRegistro(pgsql, idU.idUser , kafkaProducer);
                         }
 
                     }
@@ -121,6 +134,13 @@ namespace Worker
                                 nombreLibro varchar(255) NOT NULL,
                                 rating varchar(255) NOT NULL 
                             )";
+
+            command.CommandText = @"CREATE TABLE IF NOT EXISTS Registro (
+                            id SERIAL PRIMARY KEY,
+                            usuarioId VARCHAR(255) NOT NULL,
+                            fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )";
+
             command.ExecuteNonQuery();
 
             return connection;
@@ -193,6 +213,33 @@ namespace Worker
                 command.Parameters.AddWithValue("@rating", rating);
                 }
                 command.ExecuteNonQuery();
+            }
+            catch (DbException)
+            {
+                Console.WriteLine("llego al catch , no se actualizara");
+            }
+            finally
+            {
+                command.Dispose();
+            }
+        } 
+
+        // ID------------------USER-------------------------------------------------
+        private static void InsertRegistro(NpgsqlConnection connection, string usuarioId, IProducer<string, string> kafkaProducer)
+        {
+            var command = connection.CreateCommand();
+            try
+            {
+                
+                command.CommandText = "INSERT INTO Registro (usuarioId) VALUES ( @usuarioId)";
+                command.Parameters.AddWithValue("@usuarioId", usuarioId);
+                
+                command.ExecuteNonQuery();
+                 // Después de insertar en la base de datos, publicar un mensaje en Kafka
+                var mensaje = new Message<string, string> { Key = null, Value = usuarioId };
+                var topic = "topic_idUser"; // Reemplaza esto con el nombre del tema de Kafka al que deseas enviar el mensaje
+                kafkaProducer.ProduceAsync(topic, mensaje).GetAwaiter().GetResult();
+                Console.WriteLine("Mensaje enviado a Kafka: " + usuarioId);
             }
             catch (DbException)
             {
